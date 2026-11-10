@@ -9,7 +9,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { extensionApi as chrome, expectedBackgroundUrl, isFirefox } from "./browser-api.js";
+import { extensionApi as chrome, expectedBackgroundUrl, isFirefox, isSafari } from "./browser-api.js";
 import { engineWorkerName, createEngineRecycler } from "./engine-recycler.js";
 import { boundResponseFailure } from "./response-limits.js";
 import { decodeBase64 } from "./base64.js";
@@ -177,10 +177,33 @@ function trackHeldState(message, response) {
   }
 }
 
+// Safari exempts an extension's documents from CORS for the sites it may
+// access, but not their workers, so a remote archive is downloaded here and the
+// engine worker reads it from a Blob URL. The engine still checks the URL the
+// download ended at (downloadedArchive.finalUrl) as it would its own.
+const downloadedArchives = new Map();
+
+function downloadsInDocument(message) {
+  return isSafari(chrome) && message.type === "hd_import" && !message.blobUrl
+    && typeof message.archiveUrl === "string";
+}
+
+async function downloadArchive(id, message) {
+  const response = await fetch(message.archiveUrl, { credentials: "omit" });
+  if (!response.ok) throw new Error(`could not read ${message.fileName || "the archive"}: HTTP ${response.status}`);
+  const blobUrl = URL.createObjectURL(await response.blob());
+  downloadedArchives.set(id, blobUrl);
+  return { ...message, downloadedArchive: { blobUrl, finalUrl: response.url } };
+}
+
 function finishRequest(id, response) {
   const request = pending.get(id);
   if (request === undefined) return;
   pending.delete(id);
+  if (downloadedArchives.has(id)) {
+    URL.revokeObjectURL(downloadedArchives.get(id));
+    downloadedArchives.delete(id);
+  }
   const mutated = id === activeMutationRequestId || id === activeStagedMutationRequestId || id === activeImportRequestId;
   if (id === activeMutationRequestId) activeMutationRequestId = null;
   if (id === activeStagedMutationRequestId) activeStagedMutationRequestId = null;
@@ -564,6 +587,11 @@ function admit(message, sendResponse) {
     }
     if (worker === null) {
       return localEngine.handleEngineMessage(message).then((response) => finishRequest(id, response));
+    }
+    if (downloadsInDocument(message)) {
+      return downloadArchive(id, message).then((downloaded) => {
+        if (pending.has(id)) worker.postMessage({ channel: "engine-request", id, message: downloaded });
+      });
     }
     worker.postMessage({ channel: "engine-request", id, message });
     return undefined;

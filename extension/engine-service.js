@@ -3272,8 +3272,12 @@ async function prepareImportRequest(message) {
     recommendedSource,
   );
   const fileName = text(message.fileName) || recommendedSource?.archiveName || "the archive";
+  const downloaded = remote && text(message.downloadedArchive?.blobUrl).startsWith("blob:")
+    ? { blobUrl: message.downloadedArchive.blobUrl, finalUrl: optionalText(message.downloadedArchive.finalUrl) }
+    : null;
   return {
     archiveUrl,
+    downloaded,
     expectedRevision,
     fileName,
     importDecision,
@@ -3306,12 +3310,14 @@ function remoteArchiveFinalUrlMatches(request, finalUrl) {
 }
 
 async function fetchImportArchive(request) {
-  const response = await fetch(request.archiveUrl, { credentials: "omit" });
+  // Safari's engine document downloads a remote archive for the worker (offscreen.js).
+  const response = await fetch(request.downloaded?.blobUrl ?? request.archiveUrl, { credentials: "omit" });
   if (!response.ok) {
     throw new Error(`could not read ${request.fileName}: HTTP ${response.status}`);
   }
+  const finalUrl = request.downloaded ? request.downloaded.finalUrl : optionalText(response.url);
   if (request.remote
-      && !remoteArchiveFinalUrlMatches(request, optionalText(response.url))) {
+      && !remoteArchiveFinalUrlMatches(request, finalUrl)) {
     throw new Error(`${request.fileName} downloaded from an unexpected final URL`);
   }
   return response;
