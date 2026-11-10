@@ -18,7 +18,7 @@ import copy
 
 from firefox_manifest import CHROME_BACKGROUND, CHROME_ONLY_KEYS, SANDBOX_RESOURCES
 
-SAFARI_ONLY_FILES = ("background.html", "event-page.js")
+SAFARI_ONLY_FILES = ("background.html", "event-page.js", "safari-keepalive.js")
 UNSUPPORTED_PERMISSIONS = ("offscreen", "tabCapture", "userScripts", "downloads")
 UNSUPPORTED_OPTIONAL_PERMISSIONS = ("clipboardRead",)
 
@@ -38,6 +38,10 @@ def safari_manifest(chrome):
         manifest["optional_permissions"] = optional
     else:
         manifest.pop("optional_permissions", None)
+    # Safari unloads the background page, and the dictionaries the engine has
+    # loaded, 30 seconds after the last event it handled; safari-keepalive.js
+    # sends it a message from each shown tab.
+    manifest["content_scripts"][0]["js"] = [*manifest["content_scripts"][0]["js"], "safari-keepalive.js"]
     manifest["web_accessible_resources"] = [*manifest["web_accessible_resources"],
                                             {"resources": list(SANDBOX_RESOURCES), "matches": ["<all_urls>"]}]
     return manifest
