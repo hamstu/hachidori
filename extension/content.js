@@ -4050,7 +4050,7 @@
   // popups → Click a word, or the search page's Look up words with a click
   // (#656), which hover keeps working beside.
   function definitionClickLookup() {
-    return options.definitionLookupMode === "click" || (dock !== null && options.searchClickLookup);
+    return options.definitionLookupMode === "click" || (dock !== null && options.searchClickLookup) || lastPressWasTouch;
   }
 
   // Reading → Activation → Hover scan delay and Definition hover delay. Only a
@@ -4332,7 +4332,7 @@
   }
 
   function onMouseMove(event) {
-    if (popupResize) return;
+    if (popupResize || emulatedMouse()) return;
     if (disposed || !options.hoverEnabled) {
       return;
     }
@@ -4432,7 +4432,7 @@
   }
 
   function onMouseDown(event) {
-    if (disposed) {
+    if (disposed || emulatedMouse()) {
       return;
     }
     editedSincePointerMoved = true;
@@ -4567,8 +4567,67 @@
     else dismissPopups();
   }
 
+  // A touch screen has no hover and no activation key, so a tap looks up the
+  // word under it, whatever Reading → Activation says, and a tap away from the
+  // text and the popup closes the popup. Taps in the popup are its own: a word
+  // in its definitions opens a child popup (definitionClickLookup). A touch
+  // that travels is a scroll or a selection, and a long one is iOS's text
+  // selection, so neither looks up.
+  const TAP_TRAVEL_PX = 10;
+  const TAP_MAX_MS = 500;
+  // iOS follows a tap with emulated mouse events at the tap's point. They are
+  // not a mouse: a move without the activation key would hide the popup the tap
+  // opened, and a press on text would start a selection drag.
+  const EMULATED_MOUSE_MS = 1000;
+  let touchTap = null;
+  let lastTouchAt = -Infinity;
+  let lastPressWasTouch = false;
+
+  function emulatedMouse() {
+    return performance.now() - lastTouchAt < EMULATED_MOUSE_MS;
+  }
+
+  function onPointerDown(event) {
+    lastPressWasTouch = event.pointerType === "touch";
+    if (!lastPressWasTouch) return;
+    lastTouchAt = performance.now();
+    touchTap = event.isPrimary ? { x: event.clientX, y: event.clientY, time: lastTouchAt } : null;
+  }
+
+  function onPointerUp(event) {
+    if (event.pointerType !== "touch") return;
+    lastTouchAt = performance.now();
+    const start = touchTap;
+    touchTap = null;
+    if (!start || !event.isPrimary || lastTouchAt - start.time > TAP_MAX_MS
+        || Math.hypot(event.clientX - start.x, event.clientY - start.y) >= TAP_TRAVEL_PX) return;
+    onTap(event.clientX, event.clientY, event.target);
+  }
+
+  function onPointerCancel(event) {
+    if (event.pointerType === "touch") touchTap = null;
+  }
+
+  function onTap(clientX, clientY, target) {
+    if (disposed || !extensionAlive()) {
+      teardown("context-invalidated");
+      return;
+    }
+    if (!options.hoverEnabled || hasProtectedNote()) return;
+    if (isOurNode(target) || pointInsidePopup(clientX, clientY)) return;
+    if (window.getSelection()?.isCollapsed === false) return;
+    const candidate = resolveCandidate(clientX, clientY);
+    if (!candidate) {
+      dismissPopups();
+      return;
+    }
+    if (rootHolds(candidate)) return;
+    dismissPopups();
+    lookupCandidate(candidate);
+  }
+
   function onMouseUp(event) {
-    if (disposed) return;
+    if (disposed || emulatedMouse()) return;
     const button = activationButton();
     if (button && event.button === button.button) {
       if (scanPress?.button === event.button && scanPress.cancelRelease) event.preventDefault();
@@ -4892,7 +4951,7 @@
   }
 
   function onMouseOut(event) {
-    if (popupResize) return;
+    if (popupResize || emulatedMouse()) return;
     // A null relatedTarget on a document-level mouseout means the pointer left
     // the window entirely, which mouseleave cannot report from here: it does not
     // bubble, and a capture listener would fire for every element left.
@@ -5336,6 +5395,9 @@
     document.addEventListener("mousemove", onMouseMove, observe);
     document.addEventListener("mousedown", onMouseDown, { capture: true });
     document.addEventListener("mouseup", onMouseUp, { capture: true });
+    document.addEventListener("pointerdown", onPointerDown, observe);
+    document.addEventListener("pointerup", onPointerUp, observe);
+    document.addEventListener("pointercancel", onPointerCancel, observe);
     document.addEventListener("auxclick", onAuxClick, { capture: true });
     document.addEventListener("selectionchange", onSelectionChange);
     document.addEventListener("fullscreenchange", onFullscreenChange);
